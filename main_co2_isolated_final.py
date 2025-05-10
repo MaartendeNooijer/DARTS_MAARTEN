@@ -63,6 +63,7 @@ class Tee:
 
 def run_simulation_main(model, out_dir="."):
     time_simulated = 0.0
+    model.do_after_step()
     for ith_step, dt in enumerate(model.idata.sim.time_steps):
         model.set_well_controls(time=time_simulated)
         success = run_main(model, days=dt, out_dir=out_dir)
@@ -93,15 +94,10 @@ def run_main(model, days: float = None, restart_dt: float = 0., save_well_data: 
     import os
     from math import fabs
 
-    if ini:
-        model.bhp_yes = False
-    else:
-        model.bhp_yes = True
-
     # Time-progress pairs (real time in seconds, min simulated days)
     progress_thresholds = [
         # (0.5 * 3600, 50),       # After 30 min, should be at least 50 days
-        (4 * 3600, 3650),  # After 2.5 hrs, should be at least 10 years
+        (2 * 3600, 3650),  # After 2.5 hrs, should be at least 10 years
         (5 * 3600, 7300)  # After 5 hrs, should be at least 20 years
     ]
 
@@ -299,6 +295,79 @@ def run(physics_type: str, case: str, out_dir: str, export_vtk=True, redirect_lo
     import matplotlib.pyplot as plt
 
     def output_to_satV(self, output_directory, satV=[], threshold=0.05):
+        cell_area_m2 = 25 * 25  # m²
+        props_names = ['satV']
+        nx, ny, nz = map(int, self.reservoir.dims)
+
+        # Ensure output directory exists
+        os.makedirs(output_directory, exist_ok=True)
+
+        # COORD array → reshape pillars
+        COORD = self.reservoir.arrays['COORD']
+        coord = np.array(COORD).reshape(-1, 6)
+
+        # Manual well location (1-based), convert to 0-based
+        i_well, j_well = 14, 14 #90 - 1, 95 - 1  # 14, 14 #90 - 1, 95 - 1 #WATCH OUT, CHANGE!
+        x_well, y_well = get_cell_center(i_well, j_well, coord, nx)
+
+        # Top-layer indices
+        top_layer_indices = np.arange(nx * ny)
+        i_coords = top_layer_indices % nx
+        j_coords = top_layer_indices // nx
+
+        # Get (x, y) for each top-layer cell
+        x_centers, y_centers = [], []
+        for i, j in zip(i_coords, j_coords):
+            x, y = get_cell_center(i, j, coord, nx)
+            x_centers.append(x)
+            y_centers.append(y)
+
+        x_centers = np.array(x_centers)
+        y_centers = np.array(y_centers)
+
+        def classify_direction(dx, dy):
+            angle = (np.degrees(np.arctan2(dy, dx)) + 360) % 360
+            directions = ['E', 'NE', 'N', 'NW', 'W', 'SW', 'S', 'SE']
+            return directions[int(((angle + 22.5) % 360) // 45)]
+
+        # Assign directions to top-layer cells
+        directions = [
+            classify_direction((x - x_well), -(y - y_well))
+            for x, y in zip(x_centers, y_centers)
+        ]
+
+        directional_plume = []
+
+        for ith_step in range(1, len(self.idata.sim.time_steps) + 2):
+            _, property_array = self.output_properties(output_properties=props_names, timestep=ith_step)
+            satV_top = property_array['satV'][0][top_layer_indices]
+
+            dir_to_max_dist = {d: 0.0 for d in ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']}
+
+            for idx, s in enumerate(satV_top):
+                if s < threshold:
+                    continue
+                dx = x_centers[idx] - x_well
+                dy = y_centers[idx] - y_well
+                dist = np.sqrt(dx ** 2 + dy ** 2)
+                direction = directions[idx]
+                if dist > dir_to_max_dist[direction]:
+                    dir_to_max_dist[direction] = dist
+
+            # Compute plume surface area
+            plume_cell_count = np.sum(satV_top >= threshold)
+            plume_surface_m2 = plume_cell_count * cell_area_m2
+            dir_to_max_dist['PlumeSurface_m2'] = plume_surface_m2
+
+            directional_plume.append(dir_to_max_dist)
+
+        # Save outputs
+        save_directional_plume_to_csv(directional_plume, output_directory)
+        save_final_rose_diagram(directional_plume, output_directory)
+
+        return directional_plume
+
+        # def output_to_satV(self, output_directory, satV=[], threshold=0.05):
         props_names = ['satV']
         nx, ny, nz = map(int, self.reservoir.dims)
 
@@ -342,7 +411,7 @@ def run(physics_type: str, case: str, out_dir: str, export_vtk=True, redirect_lo
 
         directional_plume = []
 
-        for ith_step in range(len(self.idata.sim.time_steps)):
+        for ith_step in range(1, len(self.idata.sim.time_steps) + 2):
             _, property_array = self.output_properties(output_properties=props_names, timestep=ith_step)
             satV_top = property_array['satV'][0][top_layer_indices]
             satV.append(satV_top)
@@ -405,7 +474,7 @@ def run(physics_type: str, case: str, out_dir: str, export_vtk=True, redirect_lo
         plt.close()
         print(f"[Output] Saved rose diagram to: {full_path}")
 
-    # directional_plume = output_to_satV(m, output_directory=out_dir, satV=[], threshold=0.05)
+    directional_plume = output_to_satV(m, output_directory=out_dir, satV=[], threshold=0.05)
 
     # from darts.tools.flux_tools import get_wells_components_molar_rates
     # rates_dict = get_wells_components_molar_rates(m)  # model is an object
@@ -414,14 +483,15 @@ def run(physics_type: str, case: str, out_dir: str, export_vtk=True, redirect_lo
 
     def add_columns_time_data(time_data):
         molar_mass_co2 = 44.01  # kg/kmol
-        molar_density = 19.7239  # kmol/m3 at 161 bar, 300K
+        #molar_density = 19.7239  # kmol/m3 at 161 bar, 300K
         time_data['Time (years)'] = time_data['time'] / 365.25
         for k in list(time_data.keys()):
+
             if physics_type == 'ccs' and 'V rate (m3/day)' in k:
-                # time_data[k.replace('V rate (m3/day)', 'V rate (kmol/day)')] = time_data[k]
-                time_data[k.replace('V rate (m3/day)', 'V rate (ton/day)')] = time_data[
-                                                                                  k] * molar_density * molar_mass_co2 / 1000  # m3/day * kmol/m3 * kg/kmol / 1000 = ton/day
-                # time_data.drop(columns=k, inplace=True)
+            # time_data[k.replace('V rate (m3/day)', 'V rate (kmol/day)')] = time_data[k]
+            time_data[k.replace('V rate (m3/day)', 'V rate (ton/day)')] = time_data[
+                                                                              k] * molar_density * molar_mass_co2 / 1000  # m3/day * kmol/m3 * kg/kmol / 1000 = ton/day
+            # time_data.drop(columns=k, inplace=True)
             if physics_type == 'ccs' and 'V  volume (m3)' in k:
                 # time_data[k.replace('V  volume (m3)', 'V volume (kmol)')] = time_data[k]
                 time_data[k.replace('V  volume (m3)', 'V volume (Mt/year)')] = time_data[
@@ -436,11 +506,21 @@ def run(physics_type: str, case: str, out_dir: str, export_vtk=True, redirect_lo
     add_columns_time_data(time_data_report)
     time_data_report.to_pickle(os.path.join(out_dir, 'time_data_report.pkl'))
 
-    for key, values in m.my_tracked_pressures.items():  # for pressure tracker
+    # for key, values in m.my_tracked_pressures.items(): #for pressure tracker
+    #     if len(values) == len(time_data_report):
+    #         time_data_report[key] = values
+    #     else:
+    #         print(f"[Tracker Warning] Skipping {key}: len(values)={len(values)} vs time steps={len(time_data_report)}")
+
+    for key, values in m.my_tracked_pressures.items():
         if len(values) == len(time_data_report):
             time_data_report[key] = values
+        elif len(values) == len(time_data_report) + 1:
+            # First value corresponds to t=0
+            time_data_report[f"{key}_0"] = values[0]  # Store as a separate column
+            time_data_report[key] = values[1:]  # Assign the rest as usual
         else:
-            print(f"[Tracker Warning] Skipping {key}: len(values)={len(values)} vs time steps={len(time_data_report)}")
+            print(f"[Tracker Warning] Skipping {key}: unexpected length {len(values)} vs {len(time_data_report)}")
 
     writer = pd.ExcelWriter(os.path.join(out_dir, 'time_data.xlsx'))
     time_data.to_excel(writer, sheet_name='time_data')
@@ -496,7 +576,7 @@ def run(physics_type: str, case: str, out_dir: str, export_vtk=True, redirect_lo
             # for ith_step in range(len(m.idata.sim.time_steps)):
             #     # m.output_to_vtk(ith_step=ith_step)
             #     output_to_vtk(m, ith_step=ith_step)
-            steps_to_export = [len(m.idata.sim.time_steps) - 1]
+            steps_to_export = [len(m.idata.sim.time_steps) + 1]
             for ith_step in steps_to_export:
                 output_to_vtk(m, ith_step=ith_step)
 
@@ -961,7 +1041,7 @@ if __name__ == '__main__':
 
     cases_list = []
     cases_list += ['grid_CCS_maarten']
-    #cases_list += ['fault=FM1_cut=CO1_grid=G1_top=TS1_mod=OBJ_mult=1'] #This one does converge
+    #cases_list += ['fault=FM1_cut=CO1_grid=G1_top=TS1_mod=OBJ_mult=1']  # This one does converge
     #cases_list += ['fault=FM1_cut=CO1_grid=G1_top=TS2_mod=PIX_mult=2'] #This one does not converge
     cases_list = [(i, case) for i, case in enumerate(cases_list)]
 
@@ -978,7 +1058,7 @@ if __name__ == '__main__':
                 tag = f"{int(case_idx):03d}"
 
                 case = case_geom + '_' + wctrl
-                folder_name = 'results_' + physics_type + '_' + case + '_' + tag + "MS_Check"
+                folder_name = 'results_' + physics_type + '_' + case + '_' + tag + "MS_Check_2"
                 out_dir = os.path.join("results", folder_name)
 
                 time_data, time_data_report, wells, well_is_inj, total_poro_volume = run(
