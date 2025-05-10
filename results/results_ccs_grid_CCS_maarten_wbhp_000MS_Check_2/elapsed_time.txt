@@ -1,0 +1,51 @@
+Wall-clock elapsed time (from log): 00:09:06 
+
+Detailed timing breakdown (from simulation):
+Total elapsed 570.282186 sec
+	initialization 20537.386101 sec
+	newton update 2.921971 sec
+	simulation 546.878594 sec
+		jacobian assembly 259.706474 sec
+			interpolation 185.364568 sec
+				property 0 interpolation 7.485205 sec
+					body generation 7.475416 sec
+						point generation 7.456532 sec
+				property 1 interpolation 4.310890 sec
+					body generation 4.305749 sec
+						point generation 4.295856 sec
+				property 2 interpolation 3.189958 sec
+					body generation 3.184437 sec
+						point generation 3.176904 sec
+				reservoir 0 interpolation 71.753347 sec
+					body generation 62.766873 sec
+						point generation 62.449070 sec
+				reservoir 1 interpolation 48.651101 sec
+					body generation 43.420102 sec
+						point generation 43.204901 sec
+				reservoir 2 interpolation 31.994775 sec
+					body generation 27.433194 sec
+						point generation 27.285164 sec
+				well controls interpolation 0.927091 sec
+					body generation 0.003792 sec
+						point generation 0.003777 sec
+				well initialization 0.000679 sec
+					body generation 0.000658 sec
+						point generation 0.000633 sec
+				well interpolation 33.532611 sec
+					body generation 32.346284 sec
+						point generation 32.230518 sec
+		linear solver setup 127.084624 sec
+			GMRES 127.071444 sec
+				CPR 127.057784 sec
+					AMG 51.797195 sec
+					ILU(0) 70.931003 sec
+		linear solver solve 151.834177 sec
+			GMRES 151.816158 sec
+				CPR 131.788607 sec
+					AMG 68.194948 sec
+					ILU(0) 51.876744 sec
+				SPMV_bsr 8.071320 sec
+				prec_comm 0.000000 sec
+		newton update 0.000000 sec
+			composition correction 0.344917 sec
+	vtk_output 0.000000 sec
